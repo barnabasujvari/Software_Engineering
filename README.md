@@ -12,7 +12,6 @@ University project for the full process of Software development from gathering r
   * Higher lvl description of functions and classes
   * __UML Sequence diagram__ for a specific use case
 
-[SE coursework 3](https://github.com/Newcastle98/Software_Engineering/blob/master/SE%20Coursework%202/SE%20Coursework%202%20Report.pdf): 
-  * __UML Class diagram__ for the planned classes
-  * Higher lvl description of functions and classes
-  * __UML Sequence diagram__ for a specific use case
+[SE coursework 3](https://github.com/Newcastle98/Software_Engineering/blob/master/SE%20Coursework%203/AuctionHouse/src/auctionhouse): 
+  * __The implementation of the Auction Houese in Java__ with the most important code bit being in [AuctionHouseImpl.java](https://github.com/Newcastle98/Software_Engineering/blob/master/SE%20Coursework%203/AuctionHouse/src/auctionhouse/AuctionHouseImp.java). Test examples can be seen in [AuctionHouseTest.java](https://github.com/Newcastle98/Software_Engineering/blob/master/SE%20Coursework%203/AuctionHouse/src/auctionhouse/AuctionHouseTest.java), using JUnit test to make sure the program run according to the expectations.
+
