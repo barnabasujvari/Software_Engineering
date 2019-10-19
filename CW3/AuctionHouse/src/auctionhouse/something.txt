@@ -1,0 +1,1190 @@
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.logging.Logger;
+
+/**
+ * @author pbj
+ *
+ */
+ class AuctionHouseImp implements AuctionHouse {
+
+ #  private static Logger logger = Logger.getLogger("auctionhouse");
+ #  private static final String LS = System.lineSeparator();
+    // added code here
+    private Parameters parameters;
+    //Association between AuctionHouse and Buyers - map buyers to their names for easy access in methods
+    private Map<String,Buyer> buyerList = new HashMap<String,Buyer>();
+    //Association between AuctionHouse and Sellers - map sellers to their names for easy access in methods
+    private Map<String, Seller> sellerList = new HashMap<String, Seller>();
+    //Association between AuctionHouse and Lots - map lots to their lotNumbers for easy access in methods
+    private Map<Integer, Lot> catalogueLot = new HashMap<Integer, Lot>();
+    TreeMap<Integer, CatalogueEntry> catalogueEntries = new TreeMap<>();
+    
+    private String startBanner(String messageName) {
+        return  LS 
+          + "-------------------------------------------------------------" + LS
+          + "MESSAGE IN: " + messageName + LS
+          + "-------------------------------------------------------------";
+    }
+   
+    public AuctionHouseImp(Parameters parameters) {
+        this.parameters = parameters;
+    }
+    
+    public Status registerBuyer(
+            String name,
+            String address,
+            String bankAccount,
+            String bankAuthCode) {
+        logger.fine(startBanner("registerBuyer " + name));
+        
+        //check if buyer is registered 
+        if(buyerList.get(name) == null) {
+            buyerList.put(name, new Buyer(name, address, bankAccount, bankAuthCode));
+            return Status.OK();    
+        }
+        else {
+            logger.warning(startBanner("Buyer already registered"));
+            return Status.error("This buyer has already been registerd");
+        }
+    }
+
+    public Status registerSeller(
+            String name,
+            String address,
+            String bankAccount) {
+        logger.fine(startBanner("registerSeller " + name));
+        
+        //check if Seller is registered
+        if(sellerList.get(name) == null) {
+            sellerList.put(name, new Seller(name, address, bankAccount));
+            return Status.OK();    
+        }
+        else {
+            logger.warning(startBanner("Seller already registered"));
+            return Status.error("This seller has already been registered");
+        }
+    }
+
+    public Status addLot(
+            String sellerName,
+            int number,
+            String description,
+            Money reservePrice) {
+        logger.fine(startBanner("addLot " + sellerName + " " + number));
+        
+        //check if seller is unregistered
+        if(sellerList.get(sellerName) == null) {
+            logger.warning(startBanner("Seller not registered"));
+            return Status.error("This seller has not been registered"); 
+        }
+        
+        catalogueEntries.put(number, new CatalogueEntry(number, description, LotStatus.UNSOLD));
+        catalogueLot.put(number, new Lot(sellerName, number, description, reservePrice, LotStatus.UNSOLD));
+        return Status.OK();    
+    }
+
+    public List<CatalogueEntry> viewCatalogue() {
+        logger.fine(startBanner("viewCatalog"));
+        
+       List<CatalogueEntry> catalogue = new ArrayList<CatalogueEntry>(catalogueEntries.values());
+        
+        return catalogue;
+    }
+    
+    public Status noteInterest(
+            String buyerName,
+            int lotNumber) {
+        logger.fine(startBanner("noteInterest " + buyerName + " " + lotNumber));
+       
+        if(catalogueLot.get(lotNumber) == null) {
+            logger.warning(startBanner("Lot not registered"));
+            return Status.error("This lot has not been registerd");
+        }
+        
+        catalogueLot.get(lotNumber).addBuyer(buyerList.get(buyerName));
+       
+        return Status.OK();   
+    }
+
+    public Status openAuction(
+            String auctioneerName,
+            String auctioneerAddress,
+            int lotNumber) {
+        logger.fine(startBanner("openAuction " + auctioneerName + " " + lotNumber));
+        
+        if(catalogueLot.get(lotNumber) == null) {
+            logger.warning(startBanner("Lot not registered"));
+            return Status.error("This lot has not been registerd");
+        }
+        
+        
+        Lot currentLot = catalogueLot.get(lotNumber);
+        
+        // check if the lot is not already opened
+        if (currentLot.getLotStatus() == LotStatus.UNSOLD) {
+         // notify the seller
+            //retrieve seller
+            
+            String sellerAddress = sellerList.get(currentLot.getSellerName()).getAddress();
+            
+            parameters.messagingService.auctionOpened(sellerAddress, lotNumber);
+            
+            
+            // notify each interested buyer
+            List<Buyer> buyers = catalogueLot.get(lotNumber).getInterestedBuyers();
+            for (Buyer b : buyers) {
+               parameters.messagingService.auctionOpened(b.getAddress(), lotNumber);
+            }
+            
+            currentLot.setAuctioneer(new Auctioneer(auctioneerName, auctioneerAddress));
+            
+            // change the status of the lot
+            currentLot.setInAuction();
+            
+            return Status.OK();
+        }
+        
+        if (currentLot.getLotStatus() == LotStatus.SOLD) {
+            logger.warning(startBanner("Lot already sold"));
+            return Status.error("This lot is already sold.");
+        } else if (currentLot.getLotStatus() == LotStatus.IN_AUCTION) {
+            logger.warning(startBanner("Lot not opened"));
+            return Status.error("This lot has already been opened.");
+        } else {
+            logger.warning(startBanner("Lot already sold and pending payment"));
+            return Status.error("This lot is already sold and is pending payment.");
+        }
+    }
+
+    public Status makeBid(
+            String buyerName,
+            int lotNumber,
+            Money bid) {
+        logger.fine(startBanner("makeBid " + buyerName + " " + lotNumber + " " + bid));
+        
+        Lot currentLot = catalogueLot.get(lotNumber);
+        
+        if (currentLot.getLotStatus() == LotStatus.IN_AUCTION) {
+            
+            Money currentBid = currentLot.getHighestBid();
+            
+            //if a buyer has not noted interest in a lot he/she cannot make a bid on it
+            if(!currentLot.getInterestedBuyers().contains(buyerList.get(buyerName))){
+                logger.warning("Buyer has not noted interest");
+                return Status.error("Buyer has not noted interest");
+            }
+            
+            if (!bid.lessEqual(currentBid)) {
+                currentLot.setHighestBid(bid);
+                currentLot.setHighestBidder(buyerList.get(buyerName));;
+            }
+            else {
+                logger.warning("Bid not high enough");
+                return Status.error("Bid not high enough");
+            }
+            
+            String sellerAddress = sellerList.get(currentLot.getSellerName()).getAddress();
+            //notify Seller that the bid was accepted
+            parameters.messagingService.bidAccepted(sellerAddress, lotNumber, bid);
+            
+            
+            // notify each interested buyer
+            List<Buyer> buyers = catalogueLot.get(lotNumber).getInterestedBuyers();
+            for (Buyer b : buyers) {
+                if (b.getName() != buyerName) {
+                    parameters.messagingService.bidAccepted(b.getAddress(), lotNumber, bid);
+                }
+            }
+            
+            //notify auctioneer
+            String auctioneerAddress = currentLot.getAuctioneer().getAddress();
+            parameters.messagingService.bidAccepted(auctioneerAddress, lotNumber, bid);
+            
+            return Status.OK();
+        }
+        
+        if (currentLot.getLotStatus() == LotStatus.SOLD) {
+            logger.warning(startBanner("Lot already sold"));
+            return Status.error("This lot is already sold.");
+        } else if (currentLot.getLotStatus() == LotStatus.UNSOLD) {
+            logger.warning(startBanner("Lot not opened"));
+            return Status.error("This lot has not been opened.");
+        } else {
+            logger.warning(startBanner("Lot already sold and pending payment"));
+            return Status.error("This lot is already sold and is pending payment.");
+        }
+        
+    }
+
+    public Status closeAuction(
+            String auctioneerName,
+            int lotNumber) {
+        logger.fine(startBanner("closeAuction " + auctioneerName + " " + lotNumber));
+        
+        Lot currentLot = catalogueLot.get(lotNumber);
+        
+        
+        if(currentLot == null) {
+            return Status.error("This lot has not been registerd");
+        }
+        
+        if(currentLot.status != LotStatus.IN_AUCTION) {
+            return Status.error("This lot has not been opened");
+        }
+        
+        if(currentLot.getAuctioneer().getName() != auctioneerName) {
+            return Status.error("This auctioneer is not authorized to close this auction");
+        }
+        
+        
+        
+        Money finalBid = currentLot.getHighestBid();
+        
+        if (currentLot.getReservePrice().lessEqual(finalBid)) {
+            String buyerAccount = currentLot.getHighestBidder().getAccount();
+            String buyerAuthCode = currentLot.getHighestBidder().getAuthCode();
+            String sellerAccount = sellerList.get(catalogueLot.get(lotNumber).getSellerName()).getAccount();
+            Money amountBuyer = currentLot.getHighestBid().addPercent(parameters.buyerPremium);
+            Money amountSeller = currentLot.getHighestBid().addPercent(-parameters.commission);
+            Status buyertoHouse = parameters.bankingService.transfer(buyerAccount, buyerAuthCode, parameters.houseBankAccount, amountBuyer);
+            Status housetoSeller = parameters.bankingService.transfer(parameters.houseBankAccount, parameters.houseBankAuthCode, sellerAccount, amountSeller);
+            
+            //verify both transactions were okay
+            if(housetoSeller.kind == Status.Kind.OK && buyertoHouse.kind == Status.Kind.OK) {
+                currentLot.setSold();
+                String sellerAddress = sellerList.get(currentLot.getSellerName()).getAddress();
+                
+                parameters.messagingService.lotSold(sellerAddress, lotNumber);
+                                
+                // notify each interested buyer
+                List<Buyer> buyers = catalogueLot.get(lotNumber).getInterestedBuyers();
+                for (Buyer b : buyers) {
+                   parameters.messagingService.lotSold(b.getAddress(), lotNumber);
+                }
+                
+                return new Status(Status.Kind.SALE);
+            } else {
+                //if the transactions do not go through then the sale is pending
+                currentLot.setPendingPayment();
+                return new Status(Status.Kind.SALE_PENDING_PAYMENT);
+            }   
+        } else {
+            currentLot.setUnsold();
+            String sellerAddress = sellerList.get(currentLot.getSellerName()).getAddress();
+            
+            parameters.messagingService.lotUnsold(sellerAddress, lotNumber);
+            
+            // notify each interested buyer
+            List<Buyer> buyers = catalogueLot.get(lotNumber).getInterestedBuyers();
+            for (Buyer b : buyers) {
+               parameters.messagingService.lotUnsold(b.getAddress(), lotNumber);
+            }
+            
+            return new Status(Status.Kind.NO_SALE);
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+package auctionhouse;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Lot extends CatalogueEntry {
+    
+    private String sellerName;
+    private Money reservePrice;
+    private List<Buyer> interestedBuyers;
+    private Buyer highestBidder;
+    private Money highestBid;
+    private Auctioneer auctioneer;
+    
+    public Lot(String sellerName, int lotNumber, String description, Money reservePrice, LotStatus status) {
+        super(lotNumber, description, status);
+        this.sellerName = sellerName;
+        this.reservePrice = reservePrice;
+        this.interestedBuyers = new ArrayList<Buyer>();
+        this.highestBid = new Money("0");
+    }
+    
+    public String getSellerName() {
+        return sellerName;
+    }
+    
+    public int getLotNumber() {
+        return lotNumber;
+    }
+    
+    public LotStatus getLotStatus() {
+        return status;
+    }
+    
+    public void setInAuction() {
+        status = LotStatus.IN_AUCTION;
+    }
+    
+    public void setSold() {
+        status = LotStatus.SOLD;
+    }
+    
+    public void setUnsold() {
+        status = LotStatus.UNSOLD;
+    }
+    
+    public void setPendingPayment() {
+        status = LotStatus.SOLD_PENDING_PAYMENT;
+    }
+    
+    public Money getReservePrice() {
+        return reservePrice;
+    }
+    
+    public void addBuyer(Buyer interestedBuyer) {
+        interestedBuyers.add(interestedBuyer);
+    }
+    
+    public void setHighestBidder(Buyer highestBidder) {
+        this.highestBidder = highestBidder;
+    }
+    
+    public List<Buyer> getInterestedBuyers(){
+        return interestedBuyers;
+    }
+    
+    public void setHighestBid(Money highestBid) {
+        this.highestBid = highestBid;
+    }
+    
+    public Money getHighestBid() {
+        return highestBid;
+    }
+
+    public Buyer getHighestBidder() {
+        return highestBidder;
+    }
+
+    public Auctioneer getAuctioneer() {
+        return auctioneer;
+    }
+
+    public void setAuctioneer(Auctioneer auctioneer) {
+        this.auctioneer = auctioneer;
+    }
+    
+    
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * 
+ */
+package auctionhouse;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+import org.junit.Test;
+
+/**
+ * @author pbj
+ *
+ */
+public class MoneyTest {
+
+    @Test    
+    public void testAdd() {
+        Money val1 = new Money("12.34");
+        Money val2 = new Money("0.66");
+        Money result = val1.add(val2);
+        assertEquals("13.00", result.toString());
+    }
+
+    /*
+     ***********************************************************************
+     * BEGIN MODIFICATION AREA
+     ***********************************************************************
+     * Add all your JUnit tests for the Money class below.
+     */
+    @Test
+    public void testSubtract() {
+        Money val1 = new Money("14.50");
+        Money val2 = new Money("8.25");
+        Money result = val1.subtract(val2);
+        assertEquals("6.25", result.toString());
+    }
+    
+    @Test
+    public void testAddPercent() {
+        Money val = new Money("25.00");
+        Money result = val.addPercent(10.00);
+        assertEquals("27.50", result.toString());
+        
+    }
+    
+    @Test
+    public void testToString() {
+        Money val = new Money("25.111111");
+        String result = val.toString();
+        assertEquals("25.11",result);
+    }
+    
+    @Test
+    public void testCompareTo() {
+        Money val1 = new Money("1.00");
+        Money val2 = new Money("2.50");
+        Money val3 = new Money("0.25");
+        Money val4 = new Money("2.50");
+        // if x == y, returns 0
+        int equal = val2.compareTo(val4);
+        assertEquals(0, equal);
+        // if x < y, returns a value less than 0
+        int lesser = val1.compareTo(val2);
+        assertTrue(lesser < 0);
+        // if x > y, returns a value greater than 0
+        int greater = val1.compareTo(val3);
+        assertTrue(greater > 0);
+    }
+    
+    @Test 
+    public void testLessEqual() {
+        // returns True if lesser
+        Money val1 = new Money("12.50");
+        Money val2 = new Money("13.25");
+        boolean less = val1.lessEqual(val2);
+        assertTrue(less);
+        boolean greater = val2.lessEqual(val1);
+        assertFalse(greater);
+    }
+    
+    @Test 
+    public void testEquals() {
+        Money val1 = new Money("7.50");
+        Money val2 = new Money("1.25");
+        Money val3 = new Money("7.50");
+        boolean equals = val1.equals(val3);
+        boolean notequals1 = val1.equals(val2);
+        assertTrue(equals);
+        assertFalse(notequals1);
+        
+    }
+    
+    // changes from pounds to pence
+    @Test
+    public void testHashCode() {
+        Money val = new Money("32.75");
+        int result = val.hashCode();
+        assertEquals(3275, result);
+}
+
+    /*
+     * Put all class modifications above.
+     ***********************************************************************
+     * END MODIFICATION AREA
+     ***********************************************************************
+     */
+
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+}package auctionhouse;
+
+public class User {
+    
+    public String name;
+    public String address;
+    public String bankAccount;
+    
+    public User(String name, String address, String bankAccount) {
+        this.name = name;
+        this.address = address;
+        this.bankAccount = bankAccount;
+    }
+    
+    public String getName() {
+        return name;
+    }
+    
+    public String getAddress() {
+        return address;
+    }
+    
+    public String getAccount() {
+        return bankAccount;
+    }
+
+}
+
+
+
+
+
+
+
+package auctionhouse;
+
+public class Buyer extends User {
+    
+    public String bankAuthCode;
+    
+    public Buyer(String name, String address, String bankAccount, String bankAuthCode) {
+        super(name, address, bankAccount);
+        this.bankAuthCode = bankAuthCode;
+    }
+
+    public String getAuthCode() {
+        return bankAuthCode;
+    }
+    
+
+}
+
+
+
+
+
+
+
+
+
+
+
+package auctionhouse;
+
+public class Seller extends User {
+
+    public Seller(String name, String address, String bankAccount) {
+        super(name, address, bankAccount);
+    }
+    
+}
+
+
+
+
+
+
+
+
+
+
+
+
+package auctionhouse;
+
+public class Auctioneer {
+    public String name;
+    public String address;
+    
+    public Auctioneer(String name, String address) {
+        this.name = name;
+        this.address = address;
+    }
+    
+    public String getName() {
+        return name;
+    }
+    
+    public String getAddress() {
+        return address;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * Money is a class that implements the Comparable interface. 
+ * It contains simple methods for basic operations on Money
+ * It contains one variable, double value, which stores the value of a monetary sum
+ * 
+ * @author      Athiya Deviyani
+ * @author      Vasilis Ntogramatzis
+ */
+package auctionhouse;
+
+/**
+ * @author pbj
+ */
+public class Money implements Comparable<Money> {
+ 
+    private double value;
+    
+    /**
+     * Returns the result of a double multiplied by 100 and rounded
+     * to the nearest whole number
+     * 
+     * @param  pounds the monetary amount
+     * @return the number multiplied by 100 and rounded to the nearest
+     *         whole number
+     */
+    private static long getNearestPence(double pounds) {
+        return Math.round(pounds * 100.0);
+    }
+ 
+    /**
+     * Executes getNearestPence on the input double and divides the result by 100
+     * 
+     * @param  pounds the monetary amount
+     * @return the number multiplied by 100 and rounded to the nearest
+     *         whole number and then divided by 100
+     */
+    private static double normalise(double pounds) {
+        return getNearestPence(pounds)/100.0;
+        
+    }
+ 
+    /**
+     * Executes normalise on the input String which is first converted to a double
+     * 
+     * @param  pounds the monetary amount
+     * @return the normalised amount
+     */
+    public Money(String pounds) {
+        value = normalise(Double.parseDouble(pounds));
+    }
+    
+    /**
+     * Assigns a double amount to the value field
+     * 
+     * @param  pounds the monetary amount
+     */
+    private Money(double pounds) {
+        value = pounds;
+    }
+    
+    /**
+     * Increments the value field by a monetary amount m
+     * and returns a new Money object with its value field set to this value
+     * 
+     * @param  pounds an instance of a the Money class
+     * @return A new instance of the Money class with the value field equal
+     *         to the previous object's value plus the value of the input object
+     */
+    public Money add(Money m) {
+        return new Money(value + m.value);
+    }
+    
+    /**
+     * Decrements the value field by a monetary amount m
+     * and returns a new Money object with its value field set to this value
+     * 
+     * @param  pounds an instance of a the Money class
+     * @return A new instance of the Money class with the value  field equal
+     *         to the previous object's value minus the value of the input object
+     */
+    public Money subtract(Money m) {
+        return new Money(value - m.value);
+    }
+ 
+    /**
+     * Increments the value field by a certain percentage of its original value
+     * and returns a new Money object with its value field set to this value
+     * 
+     * @param  the percentage increment
+     * @return A new instance of the Money class with the value field equal
+     *         to the previous object's value incremented by a percentage of its value
+     */
+    public Money addPercent(double percent) {
+        return new Money(normalise(value * (1 + percent/100.0)));
+    }
+     
+    /**
+     * Returns this instance's value field converted to a string
+     * 
+     * @return the value field converted to a string
+     */
+    @Override
+    public String toString() {
+        return String.format("%.2f", value);
+        
+    }
+    
+    /**
+     * Compares this instance's value field with an input instance's value field 
+     * 
+     * @param another instance of Money to be compared with this instance's value
+     * @return greater than 0 if this instance's field is greater than the input instance's,
+     *                 less if otherwise and 0 if equal
+     */
+    public int compareTo(Money m) {
+        return Long.compare(getNearestPence(value),  getNearestPence(m.value)); 
+    }
+    
+    /**
+     * Compares this instance's value field with another instance's value field using the compareTo() method
+     * 
+     * @param another instance of Money
+     * @return True if this instance's value field is less than the the input instance's value field
+     */
+    public Boolean lessEqual(Money m) {
+        return compareTo(m) <= 0;
+    }
+    
+    
+    /**
+     * Takes in an object, checks if that object is an instance of Money and if it is then compares the input instance 
+     * to this instance and returns true if their value fields are equal. If the input is not an instance of Money 
+     * the return false
+     * 
+     * @param an object
+     * @return True if the input object is an instance of the Money class and its value field is equal to this instance's value field
+     */
+    @Override
+    public boolean equals(Object o) {
+        if (!(o instanceof Money)) return false;
+        Money oM = (Money) o;
+        return compareTo(oM) == 0;       
+    }
+    
+    /**
+     * Returns the hash code value as this instance's value field for this instance 
+     * 
+     * @return hash code value
+     */
+    @Override
+    public int hashCode() {
+        return Long.hashCode(getNearestPence(value));
+    }
+      
+
+}
+
+
+
+
+
+/**
+ * 
+ */
+package auctionhouse;
+
+import static org.junit.Assert.assertEquals;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+/**
+ * @author pbj
+ *
+ */
+public class AuctionHouseTest {
+
+    private static final double BUYER_PREMIUM = 10.0;
+    private static final double COMMISSION = 15.0;
+    private static final Money INCREMENT = new Money("10.00");
+    private static final String HOUSE_ACCOUNT = "AH A/C";
+    private static final String HOUSE_AUTH_CODE = "AH-auth";
+
+    private AuctionHouse house;
+    private MockMessagingService messagingService;
+    private MockBankingService bankingService;
+
+    /*
+     * Utility methods to help shorten test text.
+     */
+    private static void assertOK(Status status) { 
+        assertEquals(Status.Kind.OK, status.kind);
+    }
+    private static void assertError(Status status) { 
+        assertEquals(Status.Kind.ERROR, status.kind);
+    }
+    private static void assertSale(Status status) { 
+        assertEquals(Status.Kind.SALE, status.kind);
+    }
+    
+    private static void assertPendingPayment(Status status) { 
+        assertEquals(Status.Kind.SALE_PENDING_PAYMENT, status.kind);
+    }
+    
+    
+    /*
+     * Logging functionality
+     */
+
+    // Convenience field.  Saves on getLogger() calls when logger object needed.
+    private static Logger logger;
+
+    // Update this field to limit logging.
+    public static Level loggingLevel = Level.ALL;
+
+    private static final String LS = System.lineSeparator();
+
+    @BeforeClass
+    public static void setupLogger() {
+
+        logger = Logger.getLogger("auctionhouse"); 
+        logger.setLevel(loggingLevel);
+
+        // Ensure the root handler passes on all messages at loggingLevel and above (i.e. more severe)
+        Logger rootLogger = Logger.getLogger("");
+        Handler handler = rootLogger.getHandlers()[0];
+        handler.setLevel(loggingLevel);
+    }
+
+    private String makeBanner(String testCaseName) {
+        return  LS 
+                + "#############################################################" + LS
+                + "TESTCASE: " + testCaseName + LS
+                + "#############################################################";
+    }
+
+    @Before
+    public void setup() {
+        messagingService = new MockMessagingService();
+        bankingService = new MockBankingService();
+
+        house = new AuctionHouseImp(
+                    new Parameters(
+                        BUYER_PREMIUM,
+                        COMMISSION,
+                        INCREMENT,
+                        HOUSE_ACCOUNT,
+                        HOUSE_AUTH_CODE,
+                        messagingService,
+                        bankingService));
+
+    }
+    /*
+     * Setup story running through all the test cases.
+     * 
+     * Story end point is made controllable so that tests can check 
+     * story prefixes and branch off in different ways. 
+     */
+    private void runStory(int endPoint) {
+        assertOK(house.registerSeller("SellerY", "@SellerY", "SY A/C"));       
+        assertOK(house.registerSeller("SellerZ", "@SellerZ", "SZ A/C")); 
+        if (endPoint == 1) return;
+        
+        assertOK(house.addLot("SellerY", 2, "Painting", new Money("200.00")));
+        assertOK(house.addLot("SellerY", 1, "Bicycle", new Money("80.00")));
+        assertOK(house.addLot("SellerZ", 5, "Table", new Money("100.00")));
+        if (endPoint == 2) return;
+        
+        assertOK(house.registerBuyer("BuyerA", "@BuyerA", "BA A/C", "BA-auth"));       
+        assertOK(house.registerBuyer("BuyerB", "@BuyerB", "BB A/C", "BB-auth"));
+        assertOK(house.registerBuyer("BuyerC", "@BuyerC", "BC A/C", "BC-auth"));
+        if (endPoint == 3) return;
+        
+        assertOK(house.noteInterest("BuyerA", 1));
+        assertOK(house.noteInterest("BuyerA", 5));
+        assertOK(house.noteInterest("BuyerB", 1));
+        assertOK(house.noteInterest("BuyerB", 2));
+        if (endPoint == 4) return;
+        
+        assertOK(house.openAuction("Auctioneer1", "@Auctioneer1", 1));
+
+        messagingService.expectAuctionOpened("@BuyerA", 1);
+        messagingService.expectAuctionOpened("@BuyerB", 1);
+        messagingService.expectAuctionOpened("@SellerY", 1);
+        messagingService.verify(); 
+        if (endPoint == 5) return;
+        
+        Money m70 = new Money("70.00");
+        assertOK(house.makeBid("BuyerA", 1, m70));
+        
+        messagingService.expectBidReceived("@BuyerB", 1, m70);
+        messagingService.expectBidReceived("@Auctioneer1", 1, m70);
+        messagingService.expectBidReceived("@SellerY", 1, m70);
+        messagingService.verify();
+        if (endPoint == 6) return;
+        
+        Money m100 = new Money("100.00");
+        assertOK(house.makeBid("BuyerB", 1, m100));
+
+        messagingService.expectBidReceived("@BuyerA", 1, m100);
+        messagingService.expectBidReceived("@Auctioneer1", 1, m100);
+        messagingService.expectBidReceived("@SellerY", 1, m100);
+        messagingService.verify();
+        if (endPoint == 7) return;
+        
+        assertSale(house.closeAuction("Auctioneer1",  1));
+        messagingService.expectLotSold("@BuyerA", 1);
+        messagingService.expectLotSold("@BuyerB", 1);
+        messagingService.expectLotSold("@SellerY", 1);
+        messagingService.verify();       
+
+        bankingService.expectTransfer("BB A/C",  "BB-auth",  "AH A/C", new Money("110.00"));
+        bankingService.expectTransfer("AH A/C",  "AH-auth",  "SY A/C", new Money("85.00"));
+        bankingService.verify();
+        
+    }
+    
+    @Test
+    public void testEmptyCatalogue() {
+        logger.info(makeBanner("emptyLotStore"));
+
+        List<CatalogueEntry> expectedCatalogue = new ArrayList<CatalogueEntry>();
+        List<CatalogueEntry> actualCatalogue = house.viewCatalogue();
+
+        assertEquals(expectedCatalogue, actualCatalogue);
+
+    }
+
+    @Test
+    public void testRegisterSeller() {
+        logger.info(makeBanner("testRegisterSeller"));
+        logger.info(makeBanner("testRegisterSeller"));
+        runStory(1);
+    }
+
+    @Test
+    public void testRegisterSellerDuplicateNames() {
+        logger.info(makeBanner("testRegisterSellerDuplicateNames"));
+        runStory(1);     
+        assertError(house.registerSeller("SellerY", "@SellerZ", "SZ A/C"));       
+    }
+    
+    @Test
+    //test the case where the an already registered buyer is registered again
+    public void testRegisterBuyerDuplicateNames() {
+        logger.info(makeBanner("testRegisterBuyerDuplicateNames"));
+        runStory(3);     
+        assertError(house.registerBuyer("BuyerA", "@BuyerA", "BA A/C", "BA-auth")); 
+    }
+
+    @Test
+    public void testAddLot() {
+        logger.info(makeBanner("testAddLot"));
+        runStory(2);
+    }
+    
+    @Test
+    //test the case where an unregistered seller tries to add a lot
+    public void testUnrigesteredSellerAddLot() {
+        logger.info(makeBanner("testUnrigesteredSellerAddLot"));
+        runStory(1);
+        assertError(house.addLot("SellerN", 2, "Painting", new Money("200.00")));
+    }
+    
+    @Test
+    public void testViewCatalogue() {
+        logger.info(makeBanner("testViewCatalogue"));
+        runStory(2);
+        
+        List<CatalogueEntry> expectedCatalogue = new ArrayList<CatalogueEntry>();
+        expectedCatalogue.add(new CatalogueEntry(1, "Bicycle", LotStatus.UNSOLD)); 
+        expectedCatalogue.add(new CatalogueEntry(2, "Painting", LotStatus.UNSOLD));
+        expectedCatalogue.add(new CatalogueEntry(5, "Table", LotStatus.UNSOLD));
+
+        List<CatalogueEntry> actualCatalogue = house.viewCatalogue();
+
+        assertEquals(expectedCatalogue, actualCatalogue);
+    }
+
+    @Test
+    public void testRegisterBuyer() {
+        logger.info(makeBanner("testRegisterBuyer"));
+        runStory(3);       
+    }
+
+    @Test
+    public void testNoteInterest() {
+        logger.info(makeBanner("testNoteInterest"));
+        runStory(4);
+    }
+    
+    @Test
+    //test the case where a buyer tries to note interest on an unregistered Lot
+    public void testNoteInterestUnregLot() {
+        logger.info(makeBanner("testNoteInterest"));
+        runStory(3);
+        assertError(house.noteInterest("BuyerA", 19));
+    }
+      
+    @Test
+    public void testOpenAuction() {
+        logger.info(makeBanner("testOpenAuction"));
+        runStory(5);       
+    }
+    
+    @Test
+    //test the case where an auction is opened on an unregistered lot
+    public void testOpenAuctionUnregLot() {
+        logger.info(makeBanner("testOpenAuction"));
+        runStory(4);
+        assertError(house.openAuction("Auctioneer1", "@Auctioneer1", 19));
+    }
+      
+    @Test
+    public void testMakeBid() {
+        logger.info(makeBanner("testMakeBid"));
+        runStory(7);
+        assertError(house.closeAuction("Auctioneer1",  19));
+    }
+    
+    @Test
+    public void testMakeBidWithoutNotingInterest() {
+        logger.info(makeBanner("testMakeBidWithoutNotingInterest"));
+        runStory(7);
+        assertError(house.makeBid("BuyerB",5, new Money("1200")));
+    }
+    
+    @Test
+    public void bidNotEnough() {
+        logger.info(makeBanner("bidNotEnough"));
+        runStory(7);
+        assertError(house.makeBid("BuyerA",1, new Money("20")));
+    }
+    
+    @Test
+    public void testCloseAuctionUnopenedLot() {
+        logger.info(makeBanner("testCloseAuctionUnopenedLot"));
+        runStory(7);
+        assertError(house.closeAuction("Auctioneer", 2));
+    }
+  
+    @Test
+    public void testCloseAuctionWithSale() {
+        logger.info(makeBanner("testCloseAuctionWithSale"));
+        runStory(8);
+    }
+    
+    @Test
+    //test the case where an auction is closed on an unregistered lot
+    public void testCloseAuctionUnregLot() {
+        logger.info(makeBanner("testCloseAuctionUnregLot"));
+        runStory(7);
+        assertError(house.closeAuction("Auctioneer1",  19));
+    }
+    
+    @Test
+    //test the case where an auction results in no sale due to the hammer price being less than the reserve price
+    public void testCloseAuctionNoSale() {
+        logger.info(makeBanner("testCloseAuctionNoSale"));
+        runStory(7);
+        house.openAuction("Auctioneer2", "@Auctioneer2", 2);
+        assertError(house.closeAuction("Auctioneer1",  2));
+    }
+    
+    @Test
+    //test a transaction will result in pending payment status of the transaction with a bad account
+    public void testCloseAuctionBadAccount() {
+        logger.info(makeBanner("testCloseAuctionBadAccount"));
+        runStory(7);
+        bankingService.setBadAccount("BB A/C");
+        
+        assertPendingPayment(house.closeAuction("Auctioneer1",  1));
+    }
+    
+     
+    
+}
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * 
+ */
+package auctionhouse;
+
+
+/**
+ * @author pbj
+ *
+ */
+public class CatalogueEntry {
+    private static final String LS = System.lineSeparator();
+    
+    public int lotNumber;
+    public String description;
+    public LotStatus status;
+    
+    
+    public CatalogueEntry(int lotNumber, String description, LotStatus status) {
+        this.lotNumber = lotNumber;
+        this.description = description;
+        this.status = status;
+    }
+
+
+    @Override
+    public boolean equals(Object o) {
+        if (!(o instanceof CatalogueEntry)) return false;
+        CatalogueEntry oCE = (CatalogueEntry) o;
+        return lotNumber == oCE.lotNumber &&
+                description.equals(oCE.description) &&
+                status == oCE.status;
+    }
+    
+    @Override
+    public String toString() {
+        return LS + Integer.toString(lotNumber) +
+                ": " + description + 
+                " (" + status + ")";
+    }
+}
+*/
